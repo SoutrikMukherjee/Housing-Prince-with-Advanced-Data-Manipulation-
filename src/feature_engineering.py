@@ -164,3 +164,185 @@ class AdvancedFeatureEngineer(BaseEstimator, TransformerMixin):
             # Create multiplicative interactions
             for i, col1 in enumerate(self.numerical_features):
                 if col1 not in X.columns:
+                    continue
+                    
+                for j, col2 in enumerate(self.numerical_features[i+1:], i+1):
+                    if col2 not in X.columns:
+                        continue
+                        
+                    # Multiplicative interaction
+                    X[f"{col1}_x_{col2}"] = X[col1] * X[col2]
+                    
+                    # Additive interaction
+                    X[f"{col1}_plus_{col2}"] = X[col1] + X[col2]
+                    
+                    # Difference interaction
+                    X[f"{col1}_minus_{col2}"] = X[col1] - X[col2]
+                    
+                    # Ratio interaction (with safeguard against division by zero)
+                    X[f"{col1}_div_{col2}"] = np.where(X[col2] != 0, X[col1] / X[col2], np.nan)
+                    
+                    # Average
+                    X[f"{col1}_{col2}_avg"] = (X[col1] + X[col2]) / 2
+                    
+                    # Geometric mean (for positive values)
+                    if (X[col1] > 0).all() and (X[col2] > 0).all():
+                        X[f"{col1}_{col2}_geom_mean"] = np.sqrt(X[col1] * X[col2])
+        
+        return X
+    
+    def _add_binning_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Add binned versions of numerical features.
+        
+        Args:
+            X: Feature DataFrame
+            
+        Returns:
+            DataFrame with added binning features
+        """
+        for col in self.numerical_features:
+            if col not in X.columns:
+                continue
+                
+            # Equal-width binning (10 bins)
+            X[f"{col}_bin10"] = pd.cut(X[col], bins=10, labels=False)
+            
+            # Equal-frequency binning (quartiles)
+            X[f"{col}_quartile"] = pd.qcut(X[col], q=4, labels=False, duplicates='drop')
+            
+            # Custom binning based on domain knowledge
+            # Example: Bin house age into categories
+            if col == 'HouseAge':
+                bins = [0, 5, 10, 20, 40, 100]  # Custom bin edges
+                labels = [0, 1, 2, 3, 4]  # Custom bin labels
+                X[f"{col}_custom_bin"] = pd.cut(X[col], bins=bins, labels=labels, include_lowest=True)
+                
+            # Z-score based binning
+            z_scores = (X[col] - self.feature_means[col]) / self.feature_stds[col]
+            X[f"{col}_zscore_bin"] = pd.cut(z_scores, bins=[-np.inf, -2, -1, 0, 1, 2, np.inf], labels=False)
+            
+            # IQR-based binning
+            iqr = self.feature_q3[col] - self.feature_q1[col]
+            lower_bound = self.feature_q1[col] - 1.5 * iqr
+            upper_bound = self.feature_q3[col] + 1.5 * iqr
+            X[f"{col}_iqr_bin"] = pd.cut(
+                X[col], 
+                bins=[
+                    -np.inf,
+                    lower_bound,
+                    self.feature_q1[col],
+                    self.feature_median[col],
+                    self.feature_q3[col],
+                    upper_bound,
+                    np.inf
+                ],
+                labels=False
+            )
+        
+        return X
+    
+    def _add_cyclical_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Add cyclical features for coordinates (latitude, longitude).
+        
+        Args:
+            X: Feature DataFrame
+            
+        Returns:
+            DataFrame with added cyclical features
+        """
+        # Check if we have coordinates in the dataset
+        coord_features = [col for col in self.numerical_features if col.lower() in [
+            'latitude', 'longitude', 'lat', 'lon', 'x_coord', 'y_coord'
+        ]]
+        
+        for col in coord_features:
+            if col not in X.columns:
+                continue
+                
+            # Normalize to [0, 2π]
+            min_val = self.feature_min[col]
+            max_val = self.feature_max[col]
+            range_val = max_val - min_val
+            
+            if range_val > 0:
+                # Scale to [0, 2π]
+                normalized = 2 * np.pi * (X[col] - min_val) / range_val
+                
+                # Create sine and cosine features
+                X[f"{col}_sin"] = np.sin(normalized)
+                X[f"{col}_cos"] = np.cos(normalized)
+                
+                # Create tangent feature
+                X[f"{col}_tan"] = np.tan(normalized)
+        
+        # Special handling for latitude and longitude pairs
+        if 'Latitude' in X.columns and 'Longitude' in X.columns:
+            # Calculate Haversine distance to city center or reference point
+            # (assuming reference point might be median values)
+            ref_lat = self.feature_medians.get('Latitude', X['Latitude'].median())
+            ref_lon = self.feature_medians.get('Longitude', X['Longitude'].median())
+            
+            # Convert to radians
+            lat_rad = np.radians(X['Latitude'])
+            lon_rad = np.radians(X['Longitude'])
+            ref_lat_rad = np.radians(ref_lat)
+            ref_lon_rad = np.radians(ref_lon)
+            
+            # Haversine formula components
+            dlon = lon_rad - ref_lon_rad
+            dlat = lat_rad - ref_lat_rad
+            a = np.sin(dlat/2)**2 + np.cos(lat_rad) * np.cos(ref_lat_rad) * np.sin(dlon/2)**2
+            c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+            # Earth radius in kilometers
+            R = 6371.0
+            
+            # Distance in kilometers
+            X['distance_to_ref'] = R * c
+            
+            # Direction (bearing) to reference point
+            y = np.sin(dlon) * np.cos(lat_rad)
+            x = np.cos(ref_lat_rad) * np.sin(lat_rad) - np.sin(ref_lat_rad) * np.cos(lat_rad) * np.cos(dlon)
+            theta = np.arctan2(y, x)
+            bearing = (np.degrees(theta) + 360) % 360
+            X['bearing_to_ref'] = bearing
+            
+            # Create sine and cosine of bearing for cyclical representation
+            X['bearing_sin'] = np.sin(np.radians(bearing))
+            X['bearing_cos'] = np.cos(np.radians(bearing))
+        
+        return X
+    
+    def _add_outlier_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Add indicator features for outliers.
+        
+        Args:
+            X: Feature DataFrame
+            
+        Returns:
+            DataFrame with added outlier features
+        """
+        for col in self.numerical_features:
+            if col not in X.columns:
+                continue
+                
+            # Z-score based outliers
+            z_scores = np.abs((X[col] - self.feature_means[col]) / self.feature_stds[col])
+            X[f"{col}_is_outlier_z3"] = (z_scores > 3).astype(int)  # Beyond 3 standard deviations
+            X[f"{col}_is_outlier_z2"] = (z_scores > 2).astype(int)  # Beyond 2 standard deviations
+            
+            # IQR-based outliers
+            iqr = self.feature_q3[col] - self.feature_q1[col]
+            lower_bound = self.feature_q1[col] - 1.5 * iqr
+            upper_bound = self.feature_q3[col] + 1.5 * iqr
+            X[f"{col}_is_outlier_iqr"] = (
+                (X[col] < lower_bound) | (X[col] > upper_bound)
+            ).astype(int)
+            
+            # Distance from median
+            X[f"{col}_dist_from_median"] = np.abs(X[col] - self.feature_medians[col])
+            
+            # Percentile-based feature
+            percentiles = pd.qcut(X[col], q=100, labels=False, duplicates='drop')
+            X[f"{col}_percentile"] = percentiles
+        
+        return X
