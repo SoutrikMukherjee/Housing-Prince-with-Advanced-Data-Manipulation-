@@ -129,4 +129,4 @@ MIT
 
 ## Author
 
-Your Name - [soutrik.viratech@gmail.com](mailto:soutrik.viratech@gmail.com)
+Soutrik Mukherjee - [soutrik.viratech@gmail.com](mailto:soutrik.viratech@gmail.com)
