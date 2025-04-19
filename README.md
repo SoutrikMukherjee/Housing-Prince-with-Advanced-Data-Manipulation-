@@ -129,4 +129,4 @@ MIT
 
 ## Author
 
-Your Name - [your.email@example.com](mailto:your.email@example.com)
+Your Name - [your.email@example.com](mailto:soutrik.viratech@gmail.com)
